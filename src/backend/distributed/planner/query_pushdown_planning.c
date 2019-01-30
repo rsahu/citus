@@ -78,8 +78,9 @@ static bool IsRecurringRTE(RangeTblEntry *rangeTableEntry,
 static bool IsRecurringRangeTable(List *rangeTable, RecurringTuplesType *recurType);
 static bool HasRecurringTuples(Node *node, RecurringTuplesType *recurType);
 static MultiNode * SubqueryPushdownMultiNodeTree(Query *queryTree);
-static void FlattenJoinVars(List *columnList, Query *queryTree);
+static List * FlattenJoinVars(List *columnList, Query *queryTree);
 static void UpdateVarMappingsForExtendedOpNode(List *columnList,
+											   List *flattenedColumnList,
 											   List *subqueryTargetEntryList);
 static MultiTable * MultiSubqueryPushdownTable(Query *subquery);
 static List * CreateSubqueryTargetEntryList(List *columnList);
@@ -1391,6 +1392,7 @@ SubqueryPushdownMultiNodeTree(Query *queryTree)
 {
 	List *targetEntryList = queryTree->targetList;
 	List *columnList = NIL;
+	List *flattenedColumnList = NIL;
 	List *targetColumnList = NIL;
 	MultiCollect *subqueryCollectNode = CitusMakeNode(MultiCollect);
 	MultiTable *subqueryNode = NULL;
@@ -1450,25 +1452,26 @@ SubqueryPushdownMultiNodeTree(Query *queryTree)
 	 */
 
 	/*
-	 * uniqueColumnList contains all columns returned by subquery. Subquery target
+	 * columnList contains all columns returned by subquery. Subquery target
 	 * entry list, subquery range table entry's column name list are derived from
-	 * uniqueColumnList. Columns mentioned in multiProject node and multiExtendedOp
-	 * node are indexed with their respective position in uniqueColumnList.
+	 * columnList. Columns mentioned in multiProject node and multiExtendedOp
+	 * node are indexed with their respective position in columnList.
 	 */
 	targetColumnList = pull_var_clause_default((Node *) targetEntryList);
 	havingClauseColumnList = pull_var_clause_default(queryTree->havingQual);
 	columnList = list_concat(targetColumnList, havingClauseColumnList);
 
-	FlattenJoinVars(columnList, queryTree);
+	flattenedColumnList = FlattenJoinVars(columnList, queryTree);
 
 	/* create a target entry for each unique column */
-	subqueryTargetEntryList = CreateSubqueryTargetEntryList(columnList);
+	subqueryTargetEntryList = CreateSubqueryTargetEntryList(flattenedColumnList);
 
 	/*
 	 * Update varno/varattno fields of columns in columnList to
 	 * point to corresponding target entry in subquery target entry list.
 	 */
-	UpdateVarMappingsForExtendedOpNode(columnList, subqueryTargetEntryList);
+	UpdateVarMappingsForExtendedOpNode(columnList, flattenedColumnList,
+									   subqueryTargetEntryList);
 
 	/* new query only has target entries, join tree, and rtable*/
 	pushedDownQuery = makeNode(Query);
@@ -1531,7 +1534,8 @@ SubqueryPushdownMultiNodeTree(Query *queryTree)
 /*
  * FlattenJoinVars iterates over provided columnList to identify
  * Var's that are referenced from join RTE, and reverts back to their
- * original RTEs.
+ * original RTEs. Then, returns a new list with reverted types. Note that,
+ * length of the original list and created list must be equal.
  *
  * This is required because Postgres allows columns to be referenced using
  * a join alias. Therefore the same column from a table could be referenced
@@ -1550,11 +1554,12 @@ SubqueryPushdownMultiNodeTree(Query *queryTree)
  * Also note that in case of full outer joins, a column could be flattened to a
  * coalesce expression if the column appears in the USING clause.
  */
-static void
+static List *
 FlattenJoinVars(List *columnList, Query *queryTree)
 {
 	ListCell *columnCell = NULL;
 	List *rteList = queryTree->rtable;
+	List *flattenedColumnList = NIL;
 
 	foreach(columnCell, columnList)
 	{
@@ -1586,7 +1591,6 @@ FlattenJoinVars(List *columnList, Query *queryTree)
 				root->hasJoinRTEs = true;
 			}
 
-
 			normalizedNode = flatten_join_alias_vars(root, (Node *) column);
 
 			/*
@@ -1596,12 +1600,17 @@ FlattenJoinVars(List *columnList, Query *queryTree)
 
 			if (IsA(normalizedNode, Var))
 			{
-				memcpy(column, normalizedNode, sizeof(Var));
+				Var *var = makeNode(Var);
+
+				memcpy(var, normalizedNode, sizeof(Var));
+				flattenedColumnList = lappend(flattenedColumnList, var);
 			}
 			else if (IsA(normalizedNode, CoalesceExpr))
 			{
-				column = repalloc(column, sizeof(CoalesceExpr));
-				memcpy(column, normalizedNode, sizeof(CoalesceExpr));
+				CoalesceExpr *coalesceExpr = makeNode(CoalesceExpr);
+
+				memcpy(coalesceExpr, normalizedNode, sizeof(CoalesceExpr));
+				flattenedColumnList = lappend(flattenedColumnList, coalesceExpr);
 			}
 			else
 			{
@@ -1609,7 +1618,16 @@ FlattenJoinVars(List *columnList, Query *queryTree)
 					 nodeTag(normalizedNode));
 			}
 		}
+		else
+		{
+			Var *var = makeNode(Var);
+
+			memcpy(var, column, sizeof(Var));
+			flattenedColumnList = lappend(flattenedColumnList, var);
+		}
 	}
+
+	return flattenedColumnList;
 }
 
 
@@ -1660,16 +1678,22 @@ CreateSubqueryTargetEntryList(List *columnList)
  * to Var in the ExtendedOpNode's column list.
  */
 static void
-UpdateVarMappingsForExtendedOpNode(List *columnList, List *subqueryTargetEntryList)
+UpdateVarMappingsForExtendedOpNode(List *columnList, List *flattenedColumnList,
+								   List *subqueryTargetEntryList)
 {
 	ListCell *columnCell = NULL;
-	foreach(columnCell, columnList)
-	{
-		Node *columnOnTheExtendedNode = (Node *) lfirst(columnCell);
+	ListCell *flattenedColumnCell = NULL;
 
-		if (IsA(columnOnTheExtendedNode, Var))
+	Assert(list_length(columnList) == list_length(flattenedColumnList));
+
+	forboth(columnCell, columnList, flattenedColumnCell, flattenedColumnList)
+	{
+		Var *columnOnTheExtendedNode = (Var *) lfirst(columnCell);
+		Node *flattenedColumn = (Node *) lfirst(flattenedColumnCell);
+
+		if (IsA(flattenedColumn, Var))
 		{
-			Var *columnVar = (Var *) columnOnTheExtendedNode;
+			Var *columnVar = (Var *) flattenedColumn;
 			ListCell *targetEntryCell = NULL;
 
 			foreach(targetEntryCell, subqueryTargetEntryList)
@@ -1678,18 +1702,18 @@ UpdateVarMappingsForExtendedOpNode(List *columnList, List *subqueryTargetEntryLi
 
 				if (IsA(targetEntry->expr, Var) && equal(targetEntry->expr, columnVar))
 				{
-					columnVar->varno = 1;
-					columnVar->varattno = targetEntry->resno;
+					columnOnTheExtendedNode->varno = 1;
+					columnOnTheExtendedNode->varattno = targetEntry->resno;
 					break;
 				}
 			}
 		}
-		else if (IsA(columnOnTheExtendedNode, CoalesceExpr))
+		else if (IsA(flattenedColumn, CoalesceExpr))
 		{
-			Oid expressionType = exprType(columnOnTheExtendedNode);
-			int32 expressionTypmod = exprTypmod(columnOnTheExtendedNode);
-			Oid expressionCollation = exprCollation(columnOnTheExtendedNode);
-			CoalesceExpr *columnCoalesceExpr = (CoalesceExpr *) columnOnTheExtendedNode;
+			Oid expressionType = exprType(flattenedColumn);
+			int32 expressionTypmod = exprTypmod(flattenedColumn);
+			Oid expressionCollation = exprCollation(flattenedColumn);
+			CoalesceExpr *columnCoalesceExpr = (CoalesceExpr *) flattenedColumn;
 			ListCell *targetEntryCell = NULL;
 
 			foreach(targetEntryCell, subqueryTargetEntryList)
@@ -1699,19 +1723,11 @@ UpdateVarMappingsForExtendedOpNode(List *columnList, List *subqueryTargetEntryLi
 				if (IsA(targetEntry->expr, CoalesceExpr) &&
 					equal(targetEntry->expr, columnCoalesceExpr))
 				{
-					/*
-					 * If coalesce exists on the target list, it should be converted
-					 * to Var on the column list of the target entry.
-					 */
-					Var *varOnTheExtendedNode = makeNode(Var);
-					varOnTheExtendedNode->varno = 1;
-					varOnTheExtendedNode->varattno = targetEntry->resno;
-					varOnTheExtendedNode->vartype = expressionType;
-					varOnTheExtendedNode->vartypmod = expressionTypmod;
-					varOnTheExtendedNode->varcollid = expressionCollation;
-					columnOnTheExtendedNode = repalloc(columnOnTheExtendedNode,
-													   sizeof(Var));
-					memcpy(columnOnTheExtendedNode, varOnTheExtendedNode, sizeof(Var));
+					columnOnTheExtendedNode->varno = 1;
+					columnOnTheExtendedNode->varattno = targetEntry->resno;
+					columnOnTheExtendedNode->vartype = expressionType;
+					columnOnTheExtendedNode->vartypmod = expressionTypmod;
+					columnOnTheExtendedNode->varcollid = expressionCollation;
 					break;
 				}
 			}
@@ -1724,7 +1740,7 @@ UpdateVarMappingsForExtendedOpNode(List *columnList, List *subqueryTargetEntryLi
 		else
 		{
 			elog(ERROR, "unrecognized node type: %d for subquery pushdown logic",
-				 nodeTag(columnOnTheExtendedNode));
+				 nodeTag(flattenedColumn));
 		}
 	}
 }
