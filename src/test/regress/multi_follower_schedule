@@ -1,5 +1,5 @@
 test: multi_follower_sanity_check
-ignore: multi_follower_select_statements
-ignore: multi_follower_dml
+test: multi_follower_select_statements
+test: multi_follower_dml
 test: multi_follower_configure_followers
-ignore: multi_follower_task_tracker
+test: multi_follower_task_tracker
