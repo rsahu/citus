@@ -281,7 +281,6 @@ push(@pgOptions, '-c', "listen_addresses=${host}");
 # not required, and we don't necessarily have access to the default directory
 push(@pgOptions, '-c', "unix_socket_directories=");
 push(@pgOptions, '-c', "fsync=off");
-push(@pgOptions, '-c', "synchronous_commit=off");
 push(@pgOptions, '-c', "full_page_writes=off");
 push(@pgOptions, '-c', "bgwriter_lru_maxpages=0");
 
@@ -329,6 +328,11 @@ elsif ($followercluster)
   # followers do not execute the extension creation sql scripts that trigger the creation
   # of certificates
   push(@pgOptions, '-c', "citus.node_conninfo=sslmode=prefer");
+}
+else
+{
+  # this slightly speeds up most tests but breaks the follower tests
+  push(@pgOptions, '-c', "synchronous_commit=off");
 }
 
 if ($useMitmproxy)
