@@ -14,13 +14,20 @@ jobs:
     steps:
       - {attach_workspace: {at: .}}
       - {run: {name: 'Install and Test (check-multi)', command: 'install-and-test-ext check-multi'}}
-  test-10/check-follower:
+  test-10/check-tt-van-mx:
     docker:
       - {image: 'citusdata/exttester-10:latest'}
     working_directory: /home/circleci/project
     steps:
       - {attach_workspace: {at: .}}
-      - {run: {name: 'Install and Test (check-follower)', command: 'install-and-test-ext check-follower-cluster'}}
+      - {run: {name: 'Install and Test (check-tt-van-mx)', command: 'install-and-test-ext check-multi-task-tracker-extra check-vanilla check-multi-mx'}}
+  test-10/check-iso-work-fol:
+    docker:
+      - {image: 'citusdata/exttester-10:latest'}
+    working_directory: /home/circleci/project
+    steps:
+      - {attach_workspace: {at: .}}
+      - {run: {name: 'Install and Test (check-iso-work-fol)', command: 'install-and-test-ext check-isolation check-worker check-follower-cluster'}}
   test-10/check-failure:
     docker:
       - {image: 'citusdata/failtester-10:latest'}
@@ -35,13 +42,20 @@ jobs:
     steps:
       - {attach_workspace: {at: .}}
       - {run: {name: 'Install and Test (check-multi)', command: 'install-and-test-ext check-multi'}}
-  test-11/check-follower:
+  test-11/check-tt-van-mx:
     docker:
       - {image: 'citusdata/exttester-11:latest'}
     working_directory: /home/circleci/project
     steps:
       - {attach_workspace: {at: .}}
-      - {run: {name: 'Install and Test (check-follower)', command: 'install-and-test-ext check-follower-cluster'}}
+      - {run: {name: 'Install and Test (check-tt-van-mx)', command: 'install-and-test-ext check-multi-task-tracker-extra check-vanilla check-multi-mx'}}
+  test-11/check-iso-work-fol:
+    docker:
+      - {image: 'citusdata/exttester-11:latest'}
+    working_directory: /home/circleci/project
+    steps:
+      - {attach_workspace: {at: .}}
+      - {run: {name: 'Install and Test (check-iso-work-fol)', command: 'install-and-test-ext check-isolation check-worker check-follower-cluster'}}
   test-11/check-failure:
     docker:
       - {image: 'citusdata/failtester-11:latest'}
@@ -55,8 +69,13 @@ workflows:
     jobs:
       - build
       - {test-10/check-multi: {requires: [build]}}
-      - {test-10/check-follower: {requires: [build]}}
+
+      - {test-10/check-multi: {requires: [build]}}
+      - {test-10/check-tt-van-mx: {requires: [build]}}
+      - {test-10/check-iso-work-fol: {requires: [build]}}
       - {test-10/check-failure: {requires: [build]}}
+
       - {test-11/check-multi: {requires: [build]}}
-      - {test-11/check-follower: {requires: [build]}}
+      - {test-11/check-tt-van-mx: {requires: [build]}}
+      - {test-11/check-iso-work-fol: {requires: [build]}}
       - {test-11/check-failure: {requires: [build]}}
